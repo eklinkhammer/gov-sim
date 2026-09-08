@@ -10,14 +10,16 @@ defmodule GovSim.World.World do
             parcels: %{},
             households: %{},
             event_log: [],
-            sim_time: 0
+            sim_time: 0,
+            player_household_id: nil
 
   @type t :: %__MODULE__{
           persons: %{atom() => Person.t()},
           parcels: %{atom() => Parcel.t()},
           households: %{atom() => Household.t()},
           event_log: list(),
-          sim_time: integer()
+          sim_time: integer(),
+          player_household_id: atom() | nil
         }
 
   # Person accessors

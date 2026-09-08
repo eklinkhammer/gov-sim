@@ -3,7 +3,7 @@ defmodule GovSim.Events.Registry do
   Maps event type atoms to handler modules.
   """
 
-  alias GovSim.Events.Handlers.{Agriculture, Consumption, Labor, Social}
+  alias GovSim.Events.Handlers.{Agriculture, Consumption, Labor, Player, Social}
 
   @handlers %{
     # Consumption
@@ -26,7 +26,11 @@ defmodule GovSim.Events.Registry do
     request_work: Social,
     evaluate_request: Social,
     request_accepted: Social,
-    request_refused: Social
+    request_refused: Social,
+    # Player commands
+    player_command_plant: Player,
+    player_command_harvest: Player,
+    player_command_request_labor: Player
   }
 
   def get_handler(event_type) do

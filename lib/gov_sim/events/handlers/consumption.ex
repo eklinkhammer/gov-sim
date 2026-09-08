@@ -26,10 +26,11 @@ defmodule GovSim.Events.Handlers.Consumption do
       end
       |> Enum.reject(&is_nil/1)
 
-    # Schedule field assessment for household heads at 7:00
+    # Schedule field assessment for AI household heads at 7:00
+    # Skip the player household head — the player issues commands manually
     heads = Enum.filter(persons, fn p ->
       hh = World.get_household(world, p.household_id)
-      hh && hh.head_id == p.id
+      hh && hh.head_id == p.id && hh.id != world.player_household_id
     end)
 
     assess_events =
