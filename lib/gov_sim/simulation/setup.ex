@@ -23,6 +23,7 @@ defmodule GovSim.Simulation.Setup do
         id: :edmund,
         name: "Edmund",
         age: 35,
+        sex: :male,
         household_id: :household_1,
         labor_capacity: 1.0,
         energy: 1.0,
@@ -36,6 +37,7 @@ defmodule GovSim.Simulation.Setup do
         id: :thomas,
         name: "Thomas",
         age: 14,
+        sex: :male,
         household_id: :household_1,
         labor_capacity: 0.7,
         energy: 1.0,
@@ -49,6 +51,7 @@ defmodule GovSim.Simulation.Setup do
         id: :agnes,
         name: "Agnes",
         age: 10,
+        sex: :female,
         household_id: :household_1,
         labor_capacity: 0.4,
         energy: 1.0,
@@ -89,6 +92,7 @@ defmodule GovSim.Simulation.Setup do
         id: :aldric,
         name: "Aldric",
         age: 40,
+        sex: :male,
         household_id: :household_2,
         labor_capacity: 1.0,
         energy: 1.0,
@@ -102,6 +106,7 @@ defmodule GovSim.Simulation.Setup do
         id: :matilda,
         name: "Matilda",
         age: 16,
+        sex: :female,
         household_id: :household_2,
         labor_capacity: 0.8,
         energy: 1.0,
@@ -156,7 +161,8 @@ defmodule GovSim.Simulation.Setup do
       },
       event_log: [],
       sim_time: 0,
-      player_household_id: :household_1
+      player_household_id: :household_1,
+      player_avatar_id: :edmund
     }
   end
 

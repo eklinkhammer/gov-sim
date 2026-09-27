@@ -66,7 +66,7 @@ defmodule GovSim.Simulation.Engine do
 
   @doc "Inject a player command event at sim_time + 1. Called from LiveView."
   def inject_event(%GovSim.Events.Event{} = event) do
-    GenServer.cast(__MODULE__, {:inject_event, event})
+    GenServer.call(__MODULE__, {:inject_event, event})
   end
 
   # Server callbacks
@@ -142,10 +142,11 @@ defmodule GovSim.Simulation.Engine do
     {:noreply, new_state}
   end
 
-  def handle_cast({:inject_event, event}, state) do
+  def handle_call({:inject_event, event}, _from, state) do
     adjusted_event = %{event | time: state.world.sim_time + 1}
     new_queue = EventQueue.push(state.queue, adjusted_event)
-    {:noreply, %{state | queue: new_queue}}
+    new_state = %{state | queue: new_queue}
+    {:reply, :ok, new_state}
   end
 
   def handle_cast({:set_speed, speed}, state) do

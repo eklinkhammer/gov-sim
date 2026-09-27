@@ -7,6 +7,7 @@ defmodule GovSim.Events.Handlers.Consumption do
 
   alias GovSim.Events.Event
   alias GovSim.World.World
+  alias GovSim.World.Succession
   alias GovSim.Systems.Nutrition
   alias GovSim.Simulation.Clock
 
@@ -109,10 +110,17 @@ defmodule GovSim.Events.Handlers.Consumption do
 
         w =
           if dies do
-            World.log_event(w, %{
+            w = World.log_event(w, %{
               time: time, type: :death, system: :consumption,
               message: "#{person.name} has died of starvation."
             })
+
+            if person.id == w.player_avatar_id do
+              heir_result = Succession.find_heir(w, person.id)
+              Succession.apply_succession(w, person.id, heir_result, time)
+            else
+              w
+            end
           else
             if drop_task do
               World.log_event(w, %{

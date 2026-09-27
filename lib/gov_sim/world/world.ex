@@ -11,7 +11,9 @@ defmodule GovSim.World.World do
             households: %{},
             event_log: [],
             sim_time: 0,
-            player_household_id: nil
+            player_household_id: nil,
+            player_avatar_id: nil,
+            game_over: false
 
   @type t :: %__MODULE__{
           persons: %{atom() => Person.t()},
@@ -19,8 +21,14 @@ defmodule GovSim.World.World do
           households: %{atom() => Household.t()},
           event_log: list(),
           sim_time: integer(),
-          player_household_id: atom() | nil
+          player_household_id: atom() | nil,
+          player_avatar_id: atom() | nil,
+          game_over: boolean()
         }
+
+  # Player avatar
+  def player_avatar(%__MODULE__{player_avatar_id: nil}), do: nil
+  def player_avatar(%__MODULE__{player_avatar_id: id} = world), do: get_person(world, id)
 
   # Person accessors
   def get_person(%__MODULE__{persons: persons}, id), do: Map.get(persons, id)

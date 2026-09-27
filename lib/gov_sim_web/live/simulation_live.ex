@@ -7,6 +7,8 @@ defmodule GovSimWeb.SimulationLive do
   alias GovSim.World.World
 
   @topic "simulation"
+  # Throttle UI updates: max one re-render per interval during play mode
+  @render_throttle_ms 100
 
   @impl true
   def mount(_params, _session, socket) do
@@ -23,7 +25,10 @@ defmodule GovSimWeb.SimulationLive do
        events_processed: state.events_processed,
        queue_size: state.queue_size,
        sim_time: state.sim_time,
-       selected_decision: nil
+       selected_decision: nil,
+       pending_update: nil,
+       last_render_at: System.monotonic_time(:millisecond),
+       flush_timer: nil
      )}
   end
 
@@ -108,14 +113,55 @@ defmodule GovSimWeb.SimulationLive do
 
   @impl true
   def handle_info({:simulation_update, state}, socket) do
-    {:noreply,
-     assign(socket,
-       world: state.world,
-       speed: state.speed,
-       events_processed: state.events_processed,
-       queue_size: state.queue_size,
-       sim_time: state.sim_time
-     )}
+    # Auto-pause on game over
+    if Map.get(state.world, :game_over, false) and state.speed != :paused do
+      Engine.pause()
+    end
+
+    now = System.monotonic_time(:millisecond)
+    elapsed = now - socket.assigns.last_render_at
+
+    if elapsed >= @render_throttle_ms or state.speed == :paused do
+      {:noreply, apply_update(socket, state, now)}
+    else
+      # Stash the latest state; schedule a flush if not already pending
+      socket = assign(socket, pending_update: state)
+
+      if socket.assigns[:flush_timer] do
+        {:noreply, socket}
+      else
+        remaining = @render_throttle_ms - elapsed
+        timer = Process.send_after(self(), :flush_pending_update, remaining)
+        {:noreply, assign(socket, flush_timer: timer)}
+      end
+    end
+  end
+
+  def handle_info(:flush_pending_update, socket) do
+    socket = assign(socket, flush_timer: nil)
+
+    case socket.assigns.pending_update do
+      nil ->
+        {:noreply, socket}
+
+      state ->
+        now = System.monotonic_time(:millisecond)
+        {:noreply, apply_update(socket, state, now)}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp apply_update(socket, state, now) do
+    assign(socket,
+      world: state.world,
+      speed: state.speed,
+      events_processed: state.events_processed,
+      queue_size: state.queue_size,
+      sim_time: state.sim_time,
+      last_render_at: now,
+      pending_update: nil
+    )
   end
 
   @impl true
@@ -130,9 +176,16 @@ defmodule GovSimWeb.SimulationLive do
     player_members = World.household_members(assigns.world, player_hh_id)
     player_parcels = World.household_parcels(assigns.world, player_hh_id)
 
-    available_members =
+    avatar_id = Map.get(assigns.world, :player_avatar_id)
+    avatar = if avatar_id, do: World.get_person(assigns.world, avatar_id)
+
+    avatar_available =
+      avatar != nil and Person.alive?(avatar) and not Person.busy?(avatar)
+
+    # Non-avatar idle household members (Tier 2)
+    household_others =
       player_members
-      |> Enum.filter(&(Person.alive?(&1) and not Person.busy?(&1)))
+      |> Enum.filter(&(&1.id != avatar_id and Person.alive?(&1) and not Person.busy?(&1)))
 
     fallow_parcels = Enum.filter(player_parcels, &(&1.state == :fallow))
     ready_parcels = Enum.filter(player_parcels, &(&1.state == :ready))
@@ -149,7 +202,10 @@ defmodule GovSimWeb.SimulationLive do
       |> assign(:ai_households, ai_households)
       |> assign(:player_members, player_members)
       |> assign(:player_parcels, player_parcels)
-      |> assign(:available_members, available_members)
+      |> assign(:avatar, avatar)
+      |> assign(:avatar_id, avatar_id)
+      |> assign(:avatar_available, avatar_available)
+      |> assign(:household_others, household_others)
       |> assign(:fallow_parcels, fallow_parcels)
       |> assign(:ready_parcels, ready_parcels)
       |> assign(:other_persons, other_persons)
@@ -160,6 +216,17 @@ defmodule GovSimWeb.SimulationLive do
         <h1 class="text-2xl font-bold text-amber-400">GovSim: Medieval Village</h1>
         <p class="text-stone-400 text-sm">Two households, one player-controlled</p>
       </header>
+
+      <!-- Game Over Banner -->
+      <%= if Map.get(@world, :game_over, false) do %>
+        <div class="bg-red-900 border border-red-600 rounded-lg p-4 mb-4 text-center">
+          <h2 class="text-xl font-bold text-red-300">Game Over</h2>
+          <p class="text-red-400 text-sm mt-1">Your household has no surviving members.</p>
+          <button phx-click="reset" class="mt-3 px-4 py-2 bg-red-800 hover:bg-red-700 rounded text-sm font-semibold">
+            Reset
+          </button>
+        </div>
+      <% end %>
 
       <!-- Controls -->
       <div class="bg-stone-800 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-3">
@@ -211,21 +278,62 @@ defmodule GovSimWeb.SimulationLive do
             parcels={@player_parcels}
             sim_time={@sim_time}
             is_player={true}
+            avatar_id={@avatar_id}
           />
 
-          <!-- Player Commands -->
+          <!-- Tier 1: Your Actions (Avatar personal) -->
           <div class="bg-stone-800 rounded-lg p-4 border border-amber-700">
-            <h2 class="text-lg font-semibold text-amber-400 mb-3">Commands</h2>
+            <h2 class="text-lg font-semibold text-amber-400 mb-3">Your Actions</h2>
 
-            <%= if @available_members == [] do %>
-              <p class="text-stone-500 text-sm">No idle members available.</p>
+            <%= cond do %>
+              <% @avatar == nil -> %>
+                <p class="text-stone-500 text-sm">No avatar set. Click Reset to start fresh.</p>
+              <% not Person.alive?(@avatar) -> %>
+                <p class="text-red-400 text-sm">Your avatar is dead.</p>
+              <% Person.busy?(@avatar) -> %>
+                <p class="text-amber-400 text-sm">Busy: {task_label(@avatar.current_task)}</p>
+              <% @fallow_parcels == [] and @ready_parcels == [] -> %>
+                <p class="text-stone-500 text-sm">No actionable fields.</p>
+              <% true -> %>
+                <%= for parcel <- @fallow_parcels do %>
+                  <div class="mb-2">
+                    <button
+                      phx-click="player-plant"
+                      phx-value-parcel={parcel.id}
+                      phx-value-person={@avatar_id}
+                      class="px-2 py-1 bg-lime-800 hover:bg-lime-700 rounded text-xs"
+                    >
+                      Plant {parcel.name}
+                    </button>
+                  </div>
+                <% end %>
+                <%= for parcel <- @ready_parcels do %>
+                  <div class="mb-2">
+                    <button
+                      phx-click="player-harvest"
+                      phx-value-parcel={parcel.id}
+                      phx-value-person={@avatar_id}
+                      class="px-2 py-1 bg-yellow-800 hover:bg-yellow-700 rounded text-xs"
+                    >
+                      Harvest {parcel.name}
+                    </button>
+                  </div>
+                <% end %>
+            <% end %>
+          </div>
+
+          <!-- Tier 2: Household Commands (non-avatar members) -->
+          <div class="bg-stone-800 rounded-lg p-4 border border-stone-600">
+            <h2 class="text-lg font-semibold text-stone-300 mb-3">Household Commands</h2>
+
+            <%= if @household_others == [] do %>
+              <p class="text-stone-500 text-sm">No idle household members.</p>
             <% else %>
-              <!-- Plant commands -->
               <%= for parcel <- @fallow_parcels do %>
                 <div class="mb-2">
                   <span class="text-sm text-stone-300">Plant {parcel.name}:</span>
                   <div class="flex flex-wrap gap-1 mt-1">
-                    <%= for member <- @available_members do %>
+                    <%= for member <- @household_others do %>
                       <button
                         phx-click="player-plant"
                         phx-value-parcel={parcel.id}
@@ -239,12 +347,11 @@ defmodule GovSimWeb.SimulationLive do
                 </div>
               <% end %>
 
-              <!-- Harvest commands -->
               <%= for parcel <- @ready_parcels do %>
                 <div class="mb-2">
                   <span class="text-sm text-stone-300">Harvest {parcel.name}:</span>
                   <div class="flex flex-wrap gap-1 mt-1">
-                    <%= for member <- @available_members do %>
+                    <%= for member <- @household_others do %>
                       <button
                         phx-click="player-harvest"
                         phx-value-parcel={parcel.id}
@@ -258,47 +365,47 @@ defmodule GovSimWeb.SimulationLive do
                 </div>
               <% end %>
 
-              <!-- Request labor from other households -->
-              <%= if @other_persons != [] do %>
-                <div class="mt-3 pt-3 border-t border-stone-700">
-                  <span class="text-sm text-stone-300">Request labor:</span>
-                  <%= for target <- @other_persons do %>
-                    <div class="mt-1">
-                      <span class="text-xs text-stone-400">{target.name}:</span>
-                      <div class="flex flex-wrap gap-1 mt-1">
-                        <%= for parcel <- @fallow_parcels do %>
-                          <button
-                            phx-click="player-request-labor"
-                            phx-value-target={target.id}
-                            phx-value-parcel={parcel.id}
-                            phx-value-task="plant"
-                            class="px-2 py-1 bg-blue-800 hover:bg-blue-700 rounded text-xs"
-                          >
-                            Plant {parcel.name}
-                          </button>
-                        <% end %>
-                        <%= for parcel <- @ready_parcels do %>
-                          <button
-                            phx-click="player-request-labor"
-                            phx-value-target={target.id}
-                            phx-value-parcel={parcel.id}
-                            phx-value-task="harvest"
-                            class="px-2 py-1 bg-blue-800 hover:bg-blue-700 rounded text-xs"
-                          >
-                            Harvest {parcel.name}
-                          </button>
-                        <% end %>
-                      </div>
-                    </div>
-                  <% end %>
-                </div>
-              <% end %>
-
               <%= if @fallow_parcels == [] and @ready_parcels == [] do %>
                 <p class="text-stone-500 text-sm">No actionable fields.</p>
               <% end %>
             <% end %>
           </div>
+
+          <!-- Tier 3: Neighbor Requests -->
+          <%= if @other_persons != [] do %>
+            <div class="bg-stone-800 rounded-lg p-4 border border-blue-800">
+              <h2 class="text-lg font-semibold text-blue-400 mb-3">Neighbor Requests</h2>
+              <%= for target <- @other_persons do %>
+                <div class="mt-1">
+                  <span class="text-xs text-stone-400">{target.name}:</span>
+                  <div class="flex flex-wrap gap-1 mt-1">
+                    <%= for parcel <- @fallow_parcels do %>
+                      <button
+                        phx-click="player-request-labor"
+                        phx-value-target={target.id}
+                        phx-value-parcel={parcel.id}
+                        phx-value-task="plant"
+                        class="px-2 py-1 bg-blue-800 hover:bg-blue-700 rounded text-xs"
+                      >
+                        Plant {parcel.name}
+                      </button>
+                    <% end %>
+                    <%= for parcel <- @ready_parcels do %>
+                      <button
+                        phx-click="player-request-labor"
+                        phx-value-target={target.id}
+                        phx-value-parcel={parcel.id}
+                        phx-value-task="harvest"
+                        class="px-2 py-1 bg-blue-800 hover:bg-blue-700 rounded text-xs"
+                      >
+                        Harvest {parcel.name}
+                      </button>
+                    <% end %>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
         </div>
 
         <!-- AI Household(s) -->
@@ -310,6 +417,7 @@ defmodule GovSimWeb.SimulationLive do
               parcels={World.household_parcels(@world, hh.id)}
               sim_time={@sim_time}
               is_player={false}
+              avatar_id={nil}
             />
           <% end %>
         </div>
@@ -410,7 +518,12 @@ defmodule GovSimWeb.SimulationLive do
       <%= for person <- @members do %>
         <div class={["mb-3 p-2 rounded border", if(person.alive, do: "bg-stone-750 border-stone-700", else: "bg-red-950 border-red-900 opacity-60")]}>
           <div class="flex justify-between items-center mb-1">
-            <span class="font-medium">{person.name}</span>
+            <span class="font-medium">
+              {person.name}
+              <%= if person.id == @avatar_id do %>
+                <span class="text-xs text-amber-400 ml-1">(You)</span>
+              <% end %>
+            </span>
             <%= if person.alive do %>
               <span class="text-xs text-stone-400">Age {person.age}</span>
             <% else %>
@@ -497,6 +610,8 @@ defmodule GovSimWeb.SimulationLive do
       :player_command -> "text-amber-400 font-semibold"
       :person_try_eat -> "text-orange-300"
       :death -> "text-red-600 font-bold"
+      :game_over -> "text-red-500 font-bold"
+      :succession -> "text-purple-400"
       t when t in [:starvation, :collapse] -> "text-red-400"
       t when t in [:crop_plant, :crop_growth_check, :crop_ready] -> "text-emerald-300"
       t when t in [:plant_begin, :plant_complete] -> "text-lime-300"
@@ -514,6 +629,7 @@ defmodule GovSimWeb.SimulationLive do
       :labor -> "WORK"
       :social -> "SOC"
       :player -> "YOU"
+      :succession -> "HEIR"
       _ -> event_type_short(entry.type)
     end
   end
@@ -529,6 +645,7 @@ defmodule GovSimWeb.SimulationLive do
       :labor -> "text-yellow-500"
       :social -> "text-blue-500"
       :player -> "text-amber-400"
+      :succession -> "text-purple-500"
       _ -> "text-stone-500"
     end
   end
